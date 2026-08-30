@@ -61,6 +61,33 @@ def extract_book(book_url, source_page):
         "fetched_at": datetime.now(timezone.utc).isoformat()
     }
     
+from pydantic import BaseModel, ValidationError
+import re
+import json
+
+class Book(BaseModel):
+    title: str
+    product_url: str
+    price_gbp: float
+    price_text: str
+    availability_text: str
+    rating_text: str | None
+    description: str | None
+    source_page: str
+    fetched_at: str
+
+def clean_price(price_text):
+    match = re.search(r"[\d.]+", price_text)
+    if not match:
+        raise ValueError(f"Could not parse price from: {price_text}")
+    return float(match.group())
+
+def normalize_and_validate(raw_book):
+    price_gbp = clean_price(raw_book["price_text"])
+    record = {**raw_book, "price_gbp": price_gbp}
+    validated = Book(**record)
+    return validated.model_dump()
+
     
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
@@ -101,12 +128,28 @@ if __name__ == "__main__":
     print(f"catalogue_pages={pages}")
     print(f"unique_urls={len(urls)}")
 
-    all_books = []
+    valid_books = []
+    errors = []
+
     for i, url in enumerate(urls):
         source_page = f"https://books.toscrape.com/catalogue/page-{(i // 20) + 1}.html"
-        book = extract_book(url, source_page)
-        all_books.append(book)
+        raw_book = extract_book(url, source_page)
+        try:
+            clean_book = normalize_and_validate(raw_book)
+            valid_books.append(clean_book)
+        except (ValidationError, ValueError) as e:
+            errors.append({"url": url, "reason": str(e)})
 
-    print(f"detail_pages={len(all_books)}")
-    print(all_books[0])
+    os.makedirs("output", exist_ok=True)
+    with open("output/books.json", "w", encoding="utf-8") as f:
+        json.dump(valid_books, f, indent=2, ensure_ascii=False)
+
+    with open("output/errors.json", "w", encoding="utf-8") as f:
+        json.dump(errors, f, indent=2, ensure_ascii=False)
+
+    print(f"valid_records={len(valid_books)}")
+    print(f"invalid_records={len(errors)}")
+    
+    
+
    
