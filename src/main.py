@@ -1,8 +1,17 @@
 import os
 import requests
+import time
+import json
+import re
+from datetime import datetime, timezone
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from pydantic import BaseModel, ValidationError
 
 USER_AGENT = "FlyRankInternshipA9/1.0 (+https://github.com/Sarim-devs/polite-scraper)"
 CACHE_DIR = "cache"
+stats = {"cache_hits": 0, "pages_fetched": 0}
+
 
 def fetch_page(url, cache_filename):
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -10,6 +19,7 @@ def fetch_page(url, cache_filename):
 
     if os.path.exists(cache_path):
         print(f"CACHE HIT: {cache_filename}")
+        stats["cache_hits"] += 1
         with open(cache_path, "r", encoding="utf-8") as f:
             return f.read()
 
@@ -35,6 +45,7 @@ def fetch_page(url, cache_filename):
         if response.status_code == 200:
             with open(cache_path, "w", encoding="utf-8") as f:
                 f.write(response.text)
+            stats["pages_fetched"] += 1
             return response.text
         elif response.status_code == 404:
             raise Exception(f"Page not found (404): {url}")
@@ -48,72 +59,7 @@ def fetch_page(url, cache_filename):
             raise Exception(f"Failed to fetch {url}: status {response.status_code}")
 
     raise Exception(f"Failed to fetch {url} after {max_attempts} attempts")
- 
-    
-from datetime import datetime, timezone
 
-def extract_book(book_url, source_page):
-    cache_filename = "book-" + book_url.rstrip("/").split("/")[-2] + ".html"
-    was_cached = os.path.exists(os.path.join(CACHE_DIR, cache_filename))
-
-    html = fetch_page(book_url, cache_filename)
-    soup = BeautifulSoup(html, "html.parser")
-
-    title = soup.select_one("div.product_main h1").get_text(strip=True)
-    price_text = soup.select_one("p.price_color").get_text(strip=True)
-    availability_text = soup.select_one("p.availability").get_text(strip=True)
-
-    rating_tag = soup.select_one("p.star-rating")
-    rating_text = rating_tag["class"][1] if rating_tag else None
-
-    desc_tag = soup.select_one("#product_description ~ p")
-    description = desc_tag.get_text(strip=True) if desc_tag else None
-
-    if not was_cached:
-        time.sleep(0.5)
-
-    return {
-        "title": title,
-        "product_url": book_url,
-        "price_text": price_text,
-        "availability_text": availability_text,
-        "rating_text": rating_text,
-        "description": description,
-        "source_page": source_page,
-        "fetched_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-from pydantic import BaseModel, ValidationError
-import re
-import json
-
-class Book(BaseModel):
-    title: str
-    product_url: str
-    price_gbp: float
-    price_text: str
-    availability_text: str
-    rating_text: str | None
-    description: str | None
-    source_page: str
-    fetched_at: str
-
-def clean_price(price_text):
-    match = re.search(r"[\d.]+", price_text)
-    if not match:
-        raise ValueError(f"Could not parse price from: {price_text}")
-    return float(match.group())
-
-def normalize_and_validate(raw_book):
-    price_gbp = clean_price(raw_book["price_text"])
-    record = {**raw_book, "price_gbp": price_gbp}
-    validated = Book(**record)
-    return validated.model_dump()
-
-    
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
-import time
 
 def discover_catalogue_pages():
     base_url = "https://books.toscrape.com/catalogue/page-1.html"
@@ -145,6 +91,65 @@ def discover_catalogue_pages():
     unique_urls = list(dict.fromkeys(all_book_urls))
     return page_num, unique_urls
 
+
+def extract_book(book_url, source_page):
+    cache_filename = "book-" + book_url.rstrip("/").split("/")[-2] + ".html"
+    was_cached = os.path.exists(os.path.join(CACHE_DIR, cache_filename))
+
+    html = fetch_page(book_url, cache_filename)
+    soup = BeautifulSoup(html, "html.parser")
+
+    title = soup.select_one("div.product_main h1").get_text(strip=True)
+    price_text = soup.select_one("p.price_color").get_text(strip=True)
+    availability_text = soup.select_one("p.availability").get_text(strip=True)
+
+    rating_tag = soup.select_one("p.star-rating")
+    rating_text = rating_tag["class"][1] if rating_tag else None
+
+    desc_tag = soup.select_one("#product_description ~ p")
+    description = desc_tag.get_text(strip=True) if desc_tag else None
+
+    if not was_cached:
+        time.sleep(0.5)
+
+    return {
+        "title": title,
+        "product_url": book_url,
+        "price_text": price_text,
+        "availability_text": availability_text,
+        "rating_text": rating_text,
+        "description": description,
+        "source_page": source_page,
+        "fetched_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+class Book(BaseModel):
+    title: str
+    product_url: str
+    price_gbp: float
+    price_text: str
+    availability_text: str
+    rating_text: str | None
+    description: str | None
+    source_page: str
+    fetched_at: str
+
+
+def clean_price(price_text):
+    match = re.search(r"[\d.]+", price_text)
+    if not match:
+        raise ValueError(f"Could not parse price from: {price_text}")
+    return float(match.group())
+
+
+def normalize_and_validate(raw_book):
+    price_gbp = clean_price(raw_book["price_text"])
+    record = {**raw_book, "price_gbp": price_gbp}
+    validated = Book(**record)
+    return validated.model_dump()
+
+
 if __name__ == "__main__":
     start_time = datetime.now(timezone.utc)
 
@@ -158,8 +163,6 @@ if __name__ == "__main__":
     valid_books = []
     errors = []
     failed_pages = []
-    cache_hits = 0
-    pages_fetched = 0
 
     for i, url in enumerate(urls):
         source_page = f"https://books.toscrape.com/catalogue/page-{(i // 20) + 1}.html"
@@ -185,6 +188,8 @@ if __name__ == "__main__":
         "start_time": start_time.isoformat(),
         "duration_seconds": (end_time - start_time).total_seconds(),
         "catalogue_pages": pages,
+        "pages_fetched": stats["pages_fetched"],
+        "cache_hits": stats["cache_hits"],
         "valid_records": len(valid_books),
         "invalid_records": len(errors),
         "failed_pages": len(failed_pages),
@@ -196,6 +201,3 @@ if __name__ == "__main__":
     print(f"valid_records={len(valid_books)}")
     print(f"invalid_records={len(errors)}")
     print(f"failed_pages={len(failed_pages)}")
-    
-
-   
