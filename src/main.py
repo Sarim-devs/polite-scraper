@@ -16,6 +16,7 @@ def fetch_page(url, cache_filename):
     print(f"FETCH: {url}")
     headers = {"User-Agent": USER_AGENT}
     response = requests.get(url, headers=headers, timeout=10)
+    response.encoding = "utf-8"
     print(f"Status: {response.status_code}, Size: {len(response.text)} bytes")
 
     if response.status_code != 200:
@@ -25,7 +26,42 @@ def fetch_page(url, cache_filename):
         f.write(response.text)
 
     return response.text
+ 
+    
+from datetime import datetime, timezone
 
+def extract_book(book_url, source_page):
+    cache_filename = "book-" + book_url.rstrip("/").split("/")[-2] + ".html"
+    was_cached = os.path.exists(os.path.join(CACHE_DIR, cache_filename))
+
+    html = fetch_page(book_url, cache_filename)
+    soup = BeautifulSoup(html, "html.parser")
+
+    title = soup.select_one("div.product_main h1").get_text(strip=True)
+    price_text = soup.select_one("p.price_color").get_text(strip=True)
+    availability_text = soup.select_one("p.availability").get_text(strip=True)
+
+    rating_tag = soup.select_one("p.star-rating")
+    rating_text = rating_tag["class"][1] if rating_tag else None
+
+    desc_tag = soup.select_one("#product_description ~ p")
+    description = desc_tag.get_text(strip=True) if desc_tag else None
+
+    if not was_cached:
+        time.sleep(0.5)
+
+    return {
+        "title": title,
+        "product_url": book_url,
+        "price_text": price_text,
+        "availability_text": availability_text,
+        "rating_text": rating_text,
+        "description": description,
+        "source_page": source_page,
+        "fetched_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import time
@@ -63,5 +99,14 @@ def discover_catalogue_pages():
 if __name__ == "__main__":
     pages, urls = discover_catalogue_pages()
     print(f"catalogue_pages={pages}")
-    print(f"discovered={len(urls)}")
     print(f"unique_urls={len(urls)}")
+
+    all_books = []
+    for i, url in enumerate(urls):
+        source_page = f"https://books.toscrape.com/catalogue/page-{(i // 20) + 1}.html"
+        book = extract_book(url, source_page)
+        all_books.append(book)
+
+    print(f"detail_pages={len(all_books)}")
+    print(all_books[0])
+   
