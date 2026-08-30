@@ -13,19 +13,41 @@ def fetch_page(url, cache_filename):
         with open(cache_path, "r", encoding="utf-8") as f:
             return f.read()
 
-    print(f"FETCH: {url}")
     headers = {"User-Agent": USER_AGENT}
-    response = requests.get(url, headers=headers, timeout=10)
-    response.encoding = "utf-8"
-    print(f"Status: {response.status_code}, Size: {len(response.text)} bytes")
+    attempts = 0
+    max_attempts = 2
 
-    if response.status_code != 200:
-        raise Exception(f"Failed to fetch {url}: status {response.status_code}")
+    while attempts < max_attempts:
+        attempts += 1
+        print(f"FETCH: {url} (attempt {attempts})")
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.encoding = "utf-8"
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed: {e}")
+            if attempts < max_attempts:
+                time.sleep(1)
+                continue
+            raise Exception(f"Failed to fetch {url} after {max_attempts} attempts: {e}")
 
-    with open(cache_path, "w", encoding="utf-8") as f:
-        f.write(response.text)
+        print(f"Status: {response.status_code}, Size: {len(response.text)} bytes")
 
-    return response.text
+        if response.status_code == 200:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                f.write(response.text)
+            return response.text
+        elif response.status_code == 404:
+            raise Exception(f"Page not found (404): {url}")
+        elif response.status_code == 403:
+            raise Exception(f"Access forbidden (403): {url}")
+        elif response.status_code >= 500 and attempts < max_attempts:
+            print(f"Server error {response.status_code}, retrying...")
+            time.sleep(1)
+            continue
+        else:
+            raise Exception(f"Failed to fetch {url}: status {response.status_code}")
+
+    raise Exception(f"Failed to fetch {url} after {max_attempts} attempts")
  
     
 from datetime import datetime, timezone
@@ -124,21 +146,32 @@ def discover_catalogue_pages():
     return page_num, unique_urls
 
 if __name__ == "__main__":
+    start_time = datetime.now(timezone.utc)
+
     pages, urls = discover_catalogue_pages()
     print(f"catalogue_pages={pages}")
     print(f"unique_urls={len(urls)}")
 
+    # Deliberately broken URL to prove the run survives one bad page
+    urls.append("https://books.toscrape.com/catalogue/this-book-does-not-exist_9999/index.html")
+
     valid_books = []
     errors = []
+    failed_pages = []
+    cache_hits = 0
+    pages_fetched = 0
 
     for i, url in enumerate(urls):
         source_page = f"https://books.toscrape.com/catalogue/page-{(i // 20) + 1}.html"
-        raw_book = extract_book(url, source_page)
         try:
+            raw_book = extract_book(url, source_page)
             clean_book = normalize_and_validate(raw_book)
             valid_books.append(clean_book)
         except (ValidationError, ValueError) as e:
             errors.append({"url": url, "reason": str(e)})
+        except Exception as e:
+            print(f"FAILED PAGE: {url} - {e}")
+            failed_pages.append({"url": url, "reason": str(e)})
 
     os.makedirs("output", exist_ok=True)
     with open("output/books.json", "w", encoding="utf-8") as f:
@@ -147,9 +180,22 @@ if __name__ == "__main__":
     with open("output/errors.json", "w", encoding="utf-8") as f:
         json.dump(errors, f, indent=2, ensure_ascii=False)
 
+    end_time = datetime.now(timezone.utc)
+    report = {
+        "start_time": start_time.isoformat(),
+        "duration_seconds": (end_time - start_time).total_seconds(),
+        "catalogue_pages": pages,
+        "valid_records": len(valid_books),
+        "invalid_records": len(errors),
+        "failed_pages": len(failed_pages),
+        "failed_page_details": failed_pages
+    }
+    with open("output/run-report.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+
     print(f"valid_records={len(valid_books)}")
     print(f"invalid_records={len(errors)}")
-    
+    print(f"failed_pages={len(failed_pages)}")
     
 
    
